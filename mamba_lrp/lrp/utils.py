@@ -57,6 +57,80 @@ def relevance_propagation(
 
     return R, predictions
 
+def relevance_propagation_ig_lrp(model, embeddings, baseline, targets, n_classes, m=20, delta=1e-6):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    one_hot_targets = torch.nn.functional.one_hot(targets, n_classes).to(device)
+
+    if baseline.shape[1] != embeddings.shape[1]:
+        baseline = baseline[:, :1, :].expand_as(embeddings).clone()
+
+    accumulated = torch.zeros_like(embeddings)
+
+    
+    for k in range(1, m + 1):
+        alpha = k / m
+        x_k = (baseline + alpha * (embeddings - baseline)).data
+        x_k.requires_grad_(True)
+        
+        logits = model(inputs_embeds=x_k)[:, -1, :]
+        R_out = (logits * one_hot_targets).sum()
+        R_out.backward()
+        
+        # LRP via gradient × input at interpolated point
+        lrp_k = x_k * x_k.grad           # shape: [B, seq, d]
+        
+        accumulated += lrp_k / (x_k + delta)
+    
+    # Weight by input difference, average over path
+    R = ((embeddings - baseline) * (accumulated / m)).sum(2)
+    
+    logits_final = model(inputs_embeds=embeddings.data)[:, -1, :]
+    predictions = torch.argmax(logits_final, dim=-1)[:, None]
+    
+    return R.detach().cpu().numpy(), predictions
+
+
+def vision_relevance_propagation_ig_lrp(model, embeddings, baseline, targets, n_classes, m=20, delta=1e-6, params_to_detach=['A', 'B', 'C', 'z']):
+    B, M, _ = embeddings.shape
+    cls_token = model.cls_token.expand(B, -1, -1)
+    token_position = M // 2
+    embeddings = torch.cat((embeddings[:, :token_position, :], cls_token, embeddings[:, token_position:, :]), dim=1)
+    M = embeddings.shape[1]
+
+    embeddings = embeddings + model.pos_embed
+    embeddings = model.pos_drop(embeddings)
+    
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    one_hot_targets = torch.nn.functional.one_hot(targets, n_classes).to(device)
+
+    if baseline.shape[1] != embeddings.shape[1]:
+        baseline = baseline[:, :1, :].expand_as(embeddings).clone()
+
+    accumulated = torch.zeros_like(embeddings)
+
+    
+    for k in range(1, m + 1):
+        alpha = k / m
+        x_k = (baseline + alpha * (embeddings - baseline)).data
+        x_k.requires_grad_(True)
+        
+        logits = model(x_k, token_position, params_to_detach=params_to_detach)
+        R_out = (logits * one_hot_targets).sum()
+        R_out.backward()
+        
+        # LRP via gradient × input at interpolated point
+        lrp_k = x_k * x_k.grad           # shape: [B, seq, d]
+        
+        accumulated += lrp_k / (x_k + delta)
+    
+    # Weight by input difference, average over path
+    R = ((embeddings - baseline) * (accumulated / m)).sum(2)
+    
+    logits_final = model(embeddings.data, token_position, params_to_detach=params_to_detach)
+    predictions = torch.argmax(logits_final, dim=-1)[:, None]
+    
+    return R.detach().cpu().numpy(), predictions, logits_final
 
 def vision_relevance_propagation(
         model,
