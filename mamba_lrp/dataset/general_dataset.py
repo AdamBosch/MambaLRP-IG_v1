@@ -69,5 +69,138 @@ def get_sst_dataset(
             max_length,
             truncation
         )
+    elif split == 'test':
+        dataset = GeneralDataset(
+            dataset["test"]["sentence"],
+            dataset["test"]["label"],
+            tokenizer,
+            max_length,
+            truncation
+        )
 
     return dataset
+
+def get_medbios_dataset(
+        tokenizer,
+        max_length=512,
+        truncation=True,
+        split='test'
+):
+    dataset = load_dataset("coastalcph/medical-bios", "standard")
+
+    if split == 'train':
+        data = dataset["train"]
+    elif split == 'validation':
+        data = dataset["validation"]
+    else:
+        data = dataset["test"]
+    return GeneralDataset(
+        inputs=data["text"],
+        targets=data["label"],
+        tokenizer=tokenizer,
+        max_length=max_length,
+        truncation=truncation
+    )
+
+def get_bias_in_bios_dataset(
+        tokenizer,
+        max_length=512,
+        truncation=True,
+        split='test',
+        max_samples = None
+):
+    dataset = load_dataset("LabHC/bias_in_bios", split=split)
+    if max_samples is not None:
+        dataset = dataset.select(range(max_samples))
+    return GeneralDataset(
+        inputs=dataset["hard_text"],
+        targets=dataset["profession"],
+        tokenizer=tokenizer,
+        max_length=max_length,
+        truncation=truncation
+    )
+    
+
+def get_emotion_dataset(
+    tokenizer,
+    max_length=512,
+    truncation=True,
+    split='test'
+):
+    dataset = load_dataset("philschmid/emotion", split=split)
+    return GeneralDataset(
+        inputs=dataset["text"],
+        targets=dataset["label"],
+        tokenizer=tokenizer,
+        max_length=max_length,
+        truncation=truncation
+    )
+
+def get_snli_dataset(
+    tokenizer,
+    max_length=512,
+    truncation=True,
+    split="test"
+):
+    data = load_dataset("stanfordnlp/snli", split=split)
+
+    valid_data = data.filter(lambda x: x["label"] != -1)
+
+    inputs = [
+        f"premise: {premise} hypothesis: {hypothesis}"
+        for premise, hypothesis in zip(
+            valid_data["premise"],
+            valid_data["hypothesis"]
+        )
+    ]
+
+    return GeneralDataset(
+        inputs=inputs,
+        targets=valid_data["label"],
+        tokenizer=tokenizer,
+        max_length=max_length,
+        truncation=truncation
+    )
+
+class ImageNetDataset(Dataset):
+    def __init__(self, split="validation", transform=None, max_samples=None):
+        self.data = load_dataset("imagenet-1k", split=split)
+        if max_samples is not None:
+            self.data = self.data.select(range(max_samples))
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, i):
+        img = self.data[i]["image"].convert("RGB")   # PIL → RGB
+        label = self.data[i]["label"]
+        if self.transform:
+            img = self.transform(img)
+        return {"pixel_values": img, "label": label}
+
+def get_imagenet_dataset(transform, split="validation", max_samples=None, n_classes=1000):
+    # n_classes kept as parameter for API consistency — Vim-S always has 1000
+    assert n_classes == 1000, "Vim-S is pretrained on 1000 ImageNet classes"
+    return ImageNetDataset(split=split, transform=transform, max_samples=max_samples)
+
+def get_ecthr_dataset(tokenizer, max_length=2048, truncation=True, split="test"):
+    data = load_dataset("coastalcph/lex_glue", "ecthr_a", split=split)
+
+    inputs, targets = [], []
+    for text, labs in zip(data["text"], data["labels"]):
+        if not labs:          # skip samples with no violation label
+            continue
+        inputs.append(" ".join(text))
+        targets.append(labs[0])   # first violated article, already 0-indexed by LexGLUE
+
+    # Verify label ceiling before returning
+    assert max(targets) < 10, f"Label out of range: {max(targets)}"
+
+    return GeneralDataset(
+        inputs=inputs,
+        targets=targets,
+        tokenizer=tokenizer,
+        max_length=max_length,
+        truncation=truncation,
+    )
